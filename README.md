@@ -1,7 +1,9 @@
 # NST_VGG19
 
 Neural Style Transfer using VGG19.
+
 Original paper https://www.cv-foundation.org/openaccess/content_cvpr_2016/papers/Gatys_Image_Style_Transfer_CVPR_2016_paper.pdf
+
 VGG19 weights from `torchvision`.
 
 ## Installation
