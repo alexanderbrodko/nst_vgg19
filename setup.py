@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="nst_vgg19",
-    version="0.1.0",
+    version="0.1.2",
     author="Alexander Brodko",
     author_email="xjesus666@yandex.ru",
     description="Neural Style Transfer using VGG19",
