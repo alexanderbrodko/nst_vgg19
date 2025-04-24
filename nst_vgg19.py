@@ -45,28 +45,28 @@ class Normalization(nn.Module):
         return (img - self.mean) / self.std  # Normalize the image
 
 class NST_VGG19:
+    """
+    Neural Style Transfer using VGG19.
+    DEFAULT_CONTENT_WEIGHTS = {
+        'conv_1': 35000,  # Shape?
+        'conv_2': 28000,
+        'conv_4': 30000,
+    }
+    DEFAULT_STYLE_WEIGHTS = {
+        'conv_2': 0.000001,  # Light/shadow?
+        'conv_4': 0.000009,  # Contrast?
+        'conv_5': 0.000006,  # Volume?
+        'conv_7': 0.000003,
+        'conv_8': 0.000002,  # Dents?
+        'conv_9': 0.000003
+    }
+    :param style_image_numpy: Numpy array of the style image (H, W, C).
+    :param content_layers_weights: Dictionary of weights for content losses. 
+    :param style_layers_weights: Dictionary of weights for style losses.
+    :param quality_loss_weight: Weight for quality loss.
+    :param delta_loss_threshold: Loss change threshold for stopping optimization.
+    """
     def __init__(self, style_image_numpy, style_layers_weights=None, content_layers_weights=None, quality_loss_weight=2e-4, delta_loss_threshold=1):
-        """
-        Neural Style Transfer using VGG19.
-        DEFAULT_CONTENT_WEIGHTS = {
-            'conv_1': 35000,  # Shape?
-            'conv_2': 28000,
-            'conv_4': 30000,
-        }
-        DEFAULT_STYLE_WEIGHTS = {
-            'conv_2': 0.000001,  # Light/shadow?
-            'conv_4': 0.000009,  # Contrast?
-            'conv_5': 0.000006,  # Volume?
-            'conv_7': 0.000003,
-            'conv_8': 0.000002,  # Dents?
-            'conv_9': 0.000003
-        }
-        :param style_image_numpy: Numpy array of the style image (H, W, C).
-        :param content_layers_weights: Dictionary of weights for content losses. 
-        :param style_layers_weights: Dictionary of weights for style losses.
-        :param quality_loss_weight: Weight for quality loss.
-        :param delta_loss_threshold: Loss change threshold for stopping optimization.
-        """
         DEFAULT_CONTENT_WEIGHTS = {
             'conv_1': 35000,  # Shape?
             'conv_2': 28000,
@@ -87,13 +87,13 @@ class NST_VGG19:
         self.quality_loss_weight = quality_loss_weight
         self.delta_loss_threshold = delta_loss_threshold
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Use GPU if available
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.style_image_tensor = self.get_style_tensor(style_image_numpy)  # Preprocess style image
+        self.style_image_tensor = self.get_style_tensor(style_image_numpy)
 
-        self.vgg19 = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1).features.to(self.device).eval()  # Load VGG19 model
+        self.vgg19 = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1).features.to(self.device).eval()
 
-        self.model, self.content_losses, self.style_losses = self.build_model()  # Build the NST model
+        self.model, self.content_losses, self.style_losses = self.build_model()
 
     def get_style_tensor(self, style_image_numpy):
         style_image_tensor = torch.from_numpy(style_image_numpy).permute(2, 0, 1).float() / 255.0  # Convert (H, W, C) to (C, H, W)
