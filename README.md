@@ -2,7 +2,7 @@
 
 Neural Style Transfer using VGG19.
 
-Original paper https://www.cv-foundation.org/openaccess/content_cvpr_2016/papers/Gatys_Image_Style_Transfer_CVPR_2016_paper.pdf
+Original paper [link](https://www.cv-foundation.org/openaccess/content_cvpr_2016/papers/Gatys_Image_Style_Transfer_CVPR_2016_paper.pdf).
 
 VGG19 weights from `torchvision`.
 
@@ -14,13 +14,10 @@ pip install nst_vgg19
 
 ## Usage
 
-```
+```python
 from nst_vgg19 import NST_VGG19
-import cv2
 
-def load_image(path):
-  img = cv2.imread(path)
-  return cv.cvtColor(style_image, cv2.COLOR_BGR2RGB) # cv2 loads BGR by default so we convert
+# images must be Numpy arrays. Use np.array(pil_image)
 
 style_image = load_image('style.png')
 content_image_1 = load_image('img1.jpg')
@@ -30,9 +27,6 @@ nst = NST_VGG19(style_image)
 
 result_1 = nst(content_image_1)
 result_2 = nst(content_image_2)
-
-cv2.imwrite('result1.png', cv2.cvtColor(result_1, cv2.COLOR_RGB2BGR))
-cv2.imwrite('result2.png', cv2.cvtColor(result_2, cv2.COLOR_RGB2BGR))
 ```
 
 ## NST_VGG19 constructor options
@@ -45,7 +39,7 @@ cv2.imwrite('result2.png', cv2.cvtColor(result_2, cv2.COLOR_RGB2BGR))
 
 If you do not specify weights of loss, the folowing parameters will be used:
 
-```
+```python
 DEFAULT_CONTENT_WEIGHTS = {
     'conv_1': 35000,  # Shape?
     'conv_2': 28000,
@@ -60,5 +54,13 @@ DEFAULT_STYLE_WEIGHTS = {
     'conv_9': 0.000003
 }
 quality_loss_weight=2e-4
-delta_loss_threshold=1
+```
+
+If optimization delta becomes less than `delta_loss_threshold` then style transfer stops.
+
+
+```python
+nst = NST_VGG19(style_image, style_layers_weights=my_weights, delta_loss_threshold=0.001)
+
+result = nst(content_image) # no params except of image
 ```
