@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.optim import LBFGS
 import torch.nn.functional as F
 from torchvision import models, transforms
+from pathlib import Path
 
 class ContentLoss(nn.Module):
     def __init__(self, weight=1.0):
@@ -241,3 +242,213 @@ class NST_VGG19:
         optimizer.step(closure)
 
         return self.tensor_to_image(input_img)
+
+class VGGPreprocess(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        # Создаём 1x1 конволюцию (то же, что и умножение/сдвиг по каналам)
+        self.mean_pixel = torch.tensor([103.939/255, 116.779/255, 123.68/255], dtype=torch.float32)
+
+        # 1x1 convolution для перестановки каналов BGR -> RGB + scale + bias
+        weights = torch.zeros((3, 3, 1, 1), dtype=torch.float32)
+
+        # Умножаем каналы на 255
+        weights[0, 2, 0, 0] = 1.0  # R <- B
+        weights[1, 1, 0, 0] = 1.0  # G <- G
+        weights[2, 0, 0, 0] = 1.0  # B <- R
+
+        # Создаём слой
+        self.conv = nn.Conv2d(3, 3, kernel_size=1, bias=True)
+
+        # Загружаем веса
+        self.conv.weight.data = weights
+        self.conv.bias.data = -self.mean_pixel  # вычитаем среднее
+
+        # Замораживаем обучение
+        for param in self.conv.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        """
+        :param x: Tensor [B, 3, H, W] в диапазоне [0..1] (RGB)
+        :return: Tensor [B, 3, H, W] в BGR формате, масштабированный и центрированный
+        """
+        # Переводим в BGR и применяем mean subtraction + scale
+        return self.conv(x * 1.0)  # x*1.0 чтобы сделать копию
+
+class NST_VGG19_AdaIN:
+    def __init__(self, style_image_numpy, alpha=0.5):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.alpha = alpha
+        
+        self.vgg = self.load_vgg(Path(__file__).parent / "models/vgg_normalized.pth")
+        self.decoder = self.load_decoder(Path(__file__).parent / "models/decoder.pth")
+
+        for param in self.vgg.parameters():
+            param.requires_grad = False
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+
+        # Предобработка стиля
+        with torch.no_grad():
+            self.style_feat = self.vgg(self.image_to_tensor(style_image_numpy))
+
+    def load_vgg(self, path):
+        vgg = nn.Sequential(
+            nn.Conv2d(3, 3, (1, 1)),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(3, 64, (3, 3)),
+            nn.ReLU(),  # relu1-1
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(64, 64, (3, 3)),
+            nn.ReLU(),  # relu1-2
+            nn.MaxPool2d((2, 2), (2, 2), (0, 0), ceil_mode=True),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(64, 128, (3, 3)),
+            nn.ReLU(),  # relu2-1
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(128, 128, (3, 3)),
+            nn.ReLU(),  # relu2-2
+            nn.MaxPool2d((2, 2), (2, 2), (0, 0), ceil_mode=True),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(128, 256, (3, 3)),
+            nn.ReLU(),  # relu3-1
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(256, 256, (3, 3)),
+            nn.ReLU(),  # relu3-2
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(256, 256, (3, 3)),
+            nn.ReLU(),  # relu3-3
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(256, 256, (3, 3)),
+            nn.ReLU(),  # relu3-4
+            nn.MaxPool2d((2, 2), (2, 2), (0, 0), ceil_mode=True),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(256, 512, (3, 3)),
+            nn.ReLU(),  # relu4-1, this is the last layer used
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(512, 512, (3, 3)),
+            nn.ReLU(),  # relu4-2
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(512, 512, (3, 3)),
+            nn.ReLU(),  # relu4-3
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(512, 512, (3, 3)),
+            nn.ReLU(),  # relu4-4
+            nn.MaxPool2d((2, 2), (2, 2), (0, 0), ceil_mode=True),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(512, 512, (3, 3)),
+            nn.ReLU(),  # relu5-1
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(512, 512, (3, 3)),
+            nn.ReLU(),  # relu5-2
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(512, 512, (3, 3)),
+            nn.ReLU(),  # relu5-3
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(512, 512, (3, 3)),
+            nn.ReLU()  # relu5-4
+        ).eval()
+        vgg = nn.Sequential(*list(vgg.children())[:31])
+
+        state_dict = torch.load(path, map_location="cpu")
+
+        # Убираем префиксы, если они есть
+        new_state_dict = {}
+        for key, v in state_dict.items():
+            if key.startswith("module."):
+                key = key[7:]  # remove 'module.' prefix
+            layer_idx = int(key.split(".")[0])
+            if layer_idx <= 31:
+                new_state_dict[key] = state_dict[key]
+
+        # Загружаем веса
+        vgg.load_state_dict(state_dict, strict=False)
+
+        vgg = vgg[:]
+        return vgg.to(self.device)
+
+    def load_decoder(self, path):
+        decoder = nn.Sequential(
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(512, 256, (3, 3)),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(256, 256, (3, 3)),
+            nn.ReLU(),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(256, 256, (3, 3)),
+            nn.ReLU(),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(256, 256, (3, 3)),
+            nn.ReLU(),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(256, 128, (3, 3)),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(128, 128, (3, 3)),
+            nn.ReLU(),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(128, 64, (3, 3)),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2, mode='bicubic'),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(64, 64, (3, 3)),
+            nn.ReLU(),
+            nn.ReflectionPad2d((1, 1, 1, 1)),
+            nn.Conv2d(64, 3, (3, 3)),
+        ).eval()
+
+        state_dict = torch.load(path, map_location=self.device)
+        decoder.load_state_dict(state_dict)
+        return decoder.to(self.device)
+
+    def calc_mean_std(self, feat, eps=1e-5):
+        # eps is a small value added to the variance to avoid divide-by-zero.
+        size = feat.size()
+        assert (len(size) == 4)
+        N, C = size[:2]
+        feat_var = feat.view(N, C, -1).var(dim=2) + eps
+        feat_std = feat_var.sqrt().view(N, C, 1, 1)
+        feat_mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
+        return feat_mean, feat_std
+
+    def adaptive_instance_normalization(self, content_feat, style_feat):
+        assert (content_feat.size()[:2] == style_feat.size()[:2])
+        size = content_feat.size()
+        style_mean, style_std = self.calc_mean_std(style_feat)
+        content_mean, content_std = self.calc_mean_std(content_feat)
+
+        normalized_feat = (content_feat - content_mean.expand(size)) / content_std.expand(size)
+
+        return normalized_feat * style_std.expand(size) + style_mean.expand(size)
+
+    def image_to_tensor(self, numpy_image):
+        # (H, W, C) -> (C, H, W) -> [0..1]
+        tensor = torch.from_numpy(numpy_image).float().permute(2, 0, 1).div(255.0)
+        return tensor.to(self.device, dtype=torch.float32).unsqueeze(0)
+
+    def tensor_to_image(self, tensor):
+        # [1, C, H, W] -> [H, W, C]
+        img = tensor.squeeze(0).cpu().detach().numpy()
+        img = np.transpose(img, (1, 2, 0))
+        img = (img * 255).clip(0, 255).astype("uint8")
+        return img
+
+    def __call__(self, content_image_np):
+        content = self.image_to_tensor(content_image_np)
+
+        with torch.no_grad():
+            content_feat = self.vgg(content)
+
+        # Применяем AdaIN
+        transferred = self.adaptive_instance_normalization(content_feat, self.style_feat)
+
+        feat = transferred * self.alpha + content_feat * (1 - self.alpha)
+
+        stylized = self.decoder.forward(feat)
+
+        return self.tensor_to_image(stylized)

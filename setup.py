@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="nst_vgg19",
-    version="0.1.2",
+    version="0.1.3",
     author="Alexander Brodko",
     author_email="xjesus666@yandex.ru",
     description="Neural Style Transfer using VGG19",
@@ -10,6 +10,10 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/alexanderbrodko/nst_vgg19",
     py_modules=["nst_vgg19"],
+    package_data={
+        'nst_vgg19': ['models/*.pth'],
+    },
+    include_package_data=True,
     install_requires=[
         "torch>=1.13",
         "torchvision>=0.14",
