@@ -4,7 +4,8 @@ import torch.nn as nn
 from torch.optim import LBFGS
 import torch.nn.functional as F
 from torchvision import models, transforms
-from pathlib import Path
+import os
+import gdown
 
 class ContentLoss(nn.Module):
     def __init__(self, weight=1.0):
@@ -247,9 +248,19 @@ class NST_VGG19_AdaIN:
     def __init__(self, style_image_numpy, alpha=0.5):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.alpha = alpha
+
+        model_dir = os.path.expanduser('~/.cache/NST_VGG19/')
+        vgg_normalized_path = os.path.join(model_dir,'AdaIN_VGG19/vgg_normalized.pth')
+        decoder_path = os.path.join(model_dir, 'AdaIN_VGG19/decoder.pth')
+        if not (
+            os.path.isfile(vgg_normalized_path) or
+            os.path.isfile(decoder_path)
+        ):
+            drive_path = 'https://drive.google.com/drive/folders/1gTgmijdOCbz5vnydO5kIQtXs8u85ZT4G'
+            gdown.download_folder(url=drive_path, output=model_dir, quiet=False, use_cookies=False)
         
-        self.vgg = self.load_vgg(Path(__file__).parent / "models/vgg_normalized.pth")
-        self.decoder = self.load_decoder(Path(__file__).parent / "models/decoder.pth")
+        self.vgg = self.load_vgg(vgg_normalized_path)
+        self.decoder = self.load_decoder(decoder_path)
 
         for param in self.vgg.parameters():
             param.requires_grad = False
