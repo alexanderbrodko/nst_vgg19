@@ -243,40 +243,6 @@ class NST_VGG19:
 
         return self.tensor_to_image(input_img)
 
-class VGGPreprocess(nn.Module):
-    def __init__(self):
-        super().__init__()
-        
-        # Создаём 1x1 конволюцию (то же, что и умножение/сдвиг по каналам)
-        self.mean_pixel = torch.tensor([103.939/255, 116.779/255, 123.68/255], dtype=torch.float32)
-
-        # 1x1 convolution для перестановки каналов BGR -> RGB + scale + bias
-        weights = torch.zeros((3, 3, 1, 1), dtype=torch.float32)
-
-        # Умножаем каналы на 255
-        weights[0, 2, 0, 0] = 1.0  # R <- B
-        weights[1, 1, 0, 0] = 1.0  # G <- G
-        weights[2, 0, 0, 0] = 1.0  # B <- R
-
-        # Создаём слой
-        self.conv = nn.Conv2d(3, 3, kernel_size=1, bias=True)
-
-        # Загружаем веса
-        self.conv.weight.data = weights
-        self.conv.bias.data = -self.mean_pixel  # вычитаем среднее
-
-        # Замораживаем обучение
-        for param in self.conv.parameters():
-            param.requires_grad = False
-
-    def forward(self, x):
-        """
-        :param x: Tensor [B, 3, H, W] в диапазоне [0..1] (RGB)
-        :return: Tensor [B, 3, H, W] в BGR формате, масштабированный и центрированный
-        """
-        # Переводим в BGR и применяем mean subtraction + scale
-        return self.conv(x * 1.0)  # x*1.0 чтобы сделать копию
-
 class NST_VGG19_AdaIN:
     def __init__(self, style_image_numpy, alpha=0.5):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
