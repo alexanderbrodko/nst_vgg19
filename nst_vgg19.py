@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from torch.optim import LBFGS
 import torch.nn.functional as F
-from torchvision import models
+from torchvision.models import vgg19
 
 class StyleLoss(nn.Module):
     def __init__(self, target_feature):
@@ -38,7 +38,7 @@ class NST_VGG19:
     :param style_image: Numpy array (H, W, C) or tensor of the style image.
     :param style_layers_weights: Dictionary of weights for style losses.
     """
-    def __init__(self, style_image: np.ndarray | torch.Tensor, style_layers=['conv_2', 'conv_4', 'conv_5', 'conv_7']):
+    def __init__(self, style_image: np.ndarray | torch.Tensor, style_layers=['conv_2', 'conv_4', 'conv_6']):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         if isinstance(style_image, np.ndarray):
@@ -55,11 +55,8 @@ class NST_VGG19:
         image_tensor = torch.from_numpy(numpy_image).permute(2, 0, 1).float().div(255) # Convert (H, W, C) to (C, H, W)
         return image_tensor.unsqueeze(0).to(self.device).contiguous()
 
-    def tensor_to_image(self, tensor, need_clip=True):
-        img = tensor.squeeze(0).permute(1, 2, 0)
-        if need_clip:
-            img = img.clip(0, 1)
-        img = img.mul(255).cpu().detach().numpy().astype("uint8")
+    def tensor_to_image(self, tensor):
+        img = tensor.squeeze(0).permute(1, 2, 0).clip(0, 1).mul(255).cpu().detach().numpy().astype("uint8")
         return img
 
     @staticmethod
@@ -68,12 +65,12 @@ class NST_VGG19:
         normalization_mean = torch.tensor([0.485, 0.456, 0.406]).to(device)
         normalization_std = torch.tensor([0.229, 0.224, 0.225]).to(device)
 
-        vgg19 = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1).features.to(device)
+        base_net = vgg19(weights='DEFAULT').features.to(device)
         model = nn.Sequential(Normalization(normalization_mean, normalization_std).to(device))
         style_losses = []
         i = 0
 
-        for layer in vgg19.children():
+        for layer in base_net.children():
             if isinstance(layer, nn.Conv2d):
                 i += 1
                 name = f'conv_{i}'
@@ -108,23 +105,11 @@ class NST_VGG19:
     def __call__(
             self, 
             content_image: np.ndarray | torch.Tensor,
-            num_steps=200,
-            weights=[1e-6, 5e-6, 1e-5, 2e-5],
-            weights_initial=[1e-4] * 4,
-            noise_penalty_weight=100,
+            num_steps=100,
+            weights=[1e-6, 5e-6, 1e-5],
             output_type="np",
-            quiet=True,
-            clip=True
+            quiet=True
         ):
-        """
-        Perform style transfer on a content image.
-
-        Returns:
-            if output_type="np":
-                np.ndarray: Resulting styled image as a numpy array (H, W, C).
-            else:
-                torch.tensor
-        """
         if isinstance(content_image, np.ndarray):
             input_img = self.image_to_tensor(content_image)
         elif isinstance(content_image, torch.Tensor):
@@ -132,48 +117,37 @@ class NST_VGG19:
         else:
             raise TypeError("Input must be a numpy array or torch tensor.")
 
-        # Optimize
-        step = 0
-
-        # tried Adam, Adahessian, Adabelief. So LBFGS is the fastest and totally best in this case
         optimizer = LBFGS([input_img.requires_grad_()], max_iter=num_steps)
 
+        if not quiet:
+            from tqdm import tqdm
+            progress_bar = tqdm(total=num_steps, desc="", unit="step")
+
         def closure():
-            nonlocal step, num_steps
             optimizer.zero_grad(set_to_none=True)
 
             self.model(input_img)
 
-            # Weights starting from weights_initial and going to weights_final - for smooth translation
-            progress = step / num_steps
-
-            log_line = str(step) + ' losses: style'
             total_loss = torch.tensor(0.0, device=self.device)
             for i, sl in enumerate(self.style_losses):
-                weight = weights_initial[i] * (1 - progress) + weights[i] * progress
-                loss = (sl.loss * weight) ** 1.5
-                log_line += f' {loss.item():.2f}'
+                loss = sl.loss * weights[i]
                 total_loss += loss
 
             noise_penalty = (torch.relu(-input_img).mean() + torch.relu(input_img - 1).mean())
-            noise_loss = (noise_penalty * noise_penalty_weight) ** 1.5
-            total_loss += noise_loss
-            log_line += f', noise {noise_loss.item():.5f}, total {total_loss.item():.3f}'
+            total_loss += noise_penalty * 10000 / num_steps
 
-            if quiet is False:
-                print(log_line)
+            if not quiet:
+                progress_bar.set_postfix(noise=f"{noise_penalty.item():.0e}")
+                progress_bar.update()
 
-            step += 1
             total_loss.backward()
             return total_loss
 
         optimizer.step(closure)
 
         if output_type == 'np':
-            return self.tensor_to_image(input_img, need_clip=clip)
+            return self.tensor_to_image(input_img)
         else:
-            if clip:
-                input_img = input_img.clip(0, 1)
             return input_img.detach()
 
 def main():
@@ -183,6 +157,7 @@ def main():
     parser = argparse.ArgumentParser(description="Neural style transfer.")
     parser.add_argument("image", help="Content image.")
     parser.add_argument("-s", "--style", required=False, help="Style image.")
+    parser.add_argument("-n", "--num_steps", default=100, help="More steps - more deep transfer. 1000 is full")
     parser.add_argument("-o", "--output", default="nst_result.png", help="Output image name.")
     args = parser.parse_args()
 
@@ -193,7 +168,7 @@ def main():
     cv2.cvtColor(style_image, cv2.COLOR_BGR2RGB, style_image)  # Преобразование BGR -> RGB
 
     nst = NST_VGG19(style_image)
-    result = nst(init_image, quiet=False, clip=False)
+    result = nst(init_image, num_steps=int(args.num_steps), quiet=False)
 
     cv2.imwrite(args.output, cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
 
