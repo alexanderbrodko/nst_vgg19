@@ -136,8 +136,15 @@ class NST_VGG19:
             noise_penalty = (torch.relu(-input_img).mean() + torch.relu(input_img - 1).mean())
             total_loss += noise_penalty * 10000 / num_steps
 
+            def describe_noise_level(noise_penalty):
+                levels = ['trsh', 'bad', 'poor', 'fair', 'good', 'best']
+                thresholds = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 0]
+                for i, threshold in enumerate(thresholds):
+                    if noise_penalty >= threshold:
+                        return levels[i]
+
             if not quiet:
-                progress_bar.set_postfix(noise=f"{noise_penalty.item():.0e}")
+                progress_bar.set_postfix(q=describe_noise_level(noise_penalty.item()))
                 progress_bar.update()
 
             total_loss.backward()
