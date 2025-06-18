@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="nst_vgg19",
-    version="0.3.0",
+    version="0.3.1",
     author="Alexander Brodko",
     author_email="xjesus666@yandex.ru",
     description="Neural Style Transfer using VGG19",
@@ -13,7 +13,9 @@ setup(
     install_requires=[
         "numpy",
         "torch>=1.13",
-        "torchvision>=0.14"
+        "torchvision>=0.14",
+        "opencv-python",
+        "argparse"
     ],
     entry_points={
         "console_scripts": [

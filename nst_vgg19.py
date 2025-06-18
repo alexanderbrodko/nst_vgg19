@@ -3,6 +3,26 @@ import torch
 import torch.nn as nn
 from torch.optim import LBFGS
 import torch.nn.functional as F
+import cv2
+
+def transfer_colors(source, target, alpha=0.3):
+    source_lab = cv2.cvtColor(source, cv2.COLOR_RGB2LAB).astype(np.float32)
+    target_lab = cv2.cvtColor(target, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    for i in range(3):  # L, A, B
+        mean_src = source_lab[:, :, i].mean()
+        std_src = source_lab[:, :, i].std()
+        mean_tgt = target_lab[:, :, i].mean()
+        std_tgt = target_lab[:, :, i].std()
+
+        target_normalized = (target_lab[:, :, i] - mean_tgt) / (std_tgt + 1e-6)
+        target_aligned = target_normalized * std_src + mean_src
+
+        target_lab[:, :, i] = target_lab[:, :, i] * (1 - alpha) + np.clip(target_aligned, 0, 255) * alpha
+    
+    result = cv2.cvtColor(target_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    
+    return result
 
 class ContentLoss(nn.Module):
     def __init__(self):
@@ -64,7 +84,7 @@ class NST_VGG19:
     def __init__(self, 
         style_image: np.ndarray | torch.Tensor, 
         style_layers=['conv_2', 'conv_4', 'conv_6', 'conv_7', 'conv_9'], 
-        content_layers=['conv_6', 'conv_7'],
+        content_layers=['conv_3', 'conv_6', 'conv_7'],
         gaussian_kernel_size = 3,
         gaussian_force=1.0
     ):
@@ -76,6 +96,8 @@ class NST_VGG19:
             style_image_tensor = style_image.clone().detach().to(self.device)
         else:
             raise TypeError("Input must be a numpy array or torch tensor.")
+            
+        self.style_image = style_image
 
         self.model, self.style_losses, self.content_losses = self.build_model(
             self.device,
@@ -184,8 +206,8 @@ class NST_VGG19:
     
     @staticmethod
     def describe_noise_level(noise_val):
-        levels = ['trsh', 'bad', 'poor', 'fair', 'good', 'best']
-        thresholds = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 0]
+        levels = ['8==3', 'trsh', 'bad', 'poor', 'fair', 'good', 'best']
+        thresholds = [1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 0]
         for i, threshold in enumerate(thresholds):
             if noise_val >= threshold:
                 return levels[i]
@@ -194,12 +216,14 @@ class NST_VGG19:
             self, 
             content_image: np.ndarray | torch.Tensor,
             num_steps=100,
-            weights=[1e-6, 5e-7, 1e-5, 1e-5, 1e-6],
-            content_weights = [1e-3, 1e-3],
+            weight=1e-6,
+            content_weight = 1e-3,
             output_type="np",
             label=None
         ):
         if isinstance(content_image, np.ndarray):
+            content_image = cv2.medianBlur(content_image, 3)
+            content_image = transfer_colors(self.style_image, content_image)
             input_img = self.image_to_tensor(content_image)
         elif isinstance(content_image, torch.Tensor):
             input_img = content_image.clone().detach().to(self.device)
@@ -207,7 +231,9 @@ class NST_VGG19:
             raise TypeError("Input must be a numpy array or torch tensor.")
 
         k = 4 / ((num_steps + 20) ** 0.2)
+        smooth = k * 5
         fix = 28 / (num_steps ** 1.2) * 100
+        
         self.set_content_losses(input_img, k)
         self.set_style_target_muls(k)
         
@@ -225,11 +251,11 @@ class NST_VGG19:
             total_loss = torch.tensor(0.0, device=self.device)
             
             for i, sl in enumerate(self.style_losses):
-                loss = sl.loss * weights[i]
+                loss = sl.loss * weight
                 total_loss += loss
             
             for i, cl in enumerate(self.content_losses):
-                loss = cl.loss * content_weights[i]
+                loss = cl.loss * content_weight
                 total_loss += loss
             
             noise_penalty = (torch.relu(-input_img).mean() + torch.relu(input_img - 1).mean())
@@ -238,12 +264,13 @@ class NST_VGG19:
             blurred = self.gaussian_blur(input_img)
             diff = torch.abs(blurred - input_img)
             diff_max = diff.max(dim=1, keepdim=True)[0]
-            noise_loss = (diff_max * 7) ** 2 # если умножить на M, то фильтр (0..1)**N уменьшит 1/M разниц и увеличит (M-1)/M разниц
-            noise_loss = noise_loss.mean()
-            total_loss += noise_loss * k
+            M = 1.2
+            gaussian_loss = (diff_max * M) ** 2 # если умножить на M, то фильтр (0..1)**N уменьшит 1/M разниц и увеличит (M-1)/M разниц
+            gaussian_loss = gaussian_loss.mean()
+            total_loss += gaussian_loss * smooth / (M**2)
             
             if progress_bar is not None:
-                progress_bar.set_postfix(q=self.describe_noise_level(noise_penalty.item() + noise_loss.item() * 1e-3))
+                progress_bar.set_postfix(q=self.describe_noise_level(noise_penalty.item()))
                 progress_bar.update()
 
             total_loss.backward()
@@ -259,6 +286,67 @@ class NST_VGG19:
         else:
             return input_img.detach()
 
+def calc_rgba(rgb_white_bg_numpy, rgb_black_bg_numpy, a_orig):
+    """
+    Вычисляет RGBA изображение (с альфа-каналом) на основе спрайта на белом и черном фонах.
+
+    :param rgb_white_bg_numpy: numpy массив изображения спрайта на белом фоне (RGB).
+    :param rgb_black_bg_numpy: numpy массив изображения спрайта на черном фоне (RGB).
+    :return: numpy массив RGBA изображения (4 канала).
+    """
+    
+    white = rgb_white_bg_numpy.astype(np.float32) / 255.0
+    black = rgb_black_bg_numpy.astype(np.float32) / 255.0
+
+    if white.shape != black.shape:
+        raise ValueError("Изображения должны иметь одинаковые размеры!")
+
+    alpha_r = 1 - (white[:, :, 0] - black[:, :, 0])
+    alpha_g = 1 - (white[:, :, 1] - black[:, :, 1])
+    alpha_b = 1 - (white[:, :, 2] - black[:, :, 2])
+
+    alpha = (alpha_r + alpha_g + alpha_b) / 3.0
+    alpha = np.clip(alpha, 0, 1)
+
+    a_orig = a_orig.astype(np.float32) / 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    a_orig = cv2.dilate(a_orig, kernel, iterations=2)
+    
+    alpha *= a_orig * a_orig
+    xjesu_denoiser = lambda x, p: 1 - (1 - x) / ( x**p + (1 - x)**p )**(1/p)
+    alpha = xjesu_denoiser(alpha, 4)
+
+    sprite_r = np.zeros_like(black[:, :, 0])
+    sprite_g = np.zeros_like(black[:, :, 1])
+    sprite_b = np.zeros_like(black[:, :, 2])
+
+    non_zero_alpha = alpha > 0
+    sprite_r[non_zero_alpha] = black[:, :, 0][non_zero_alpha] / alpha[non_zero_alpha]
+    sprite_g[non_zero_alpha] = black[:, :, 1][non_zero_alpha] / alpha[non_zero_alpha]
+    sprite_b[non_zero_alpha] = black[:, :, 2][non_zero_alpha] / alpha[non_zero_alpha]
+
+    sprite_r = np.clip(sprite_r, 0, 1)
+    sprite_g = np.clip(sprite_g, 0, 1)
+    sprite_b = np.clip(sprite_b, 0, 1)
+
+    rgba = np.zeros((*alpha.shape, 4), dtype=np.float32)
+    rgba[:, :, 0] = sprite_r
+    rgba[:, :, 1] = sprite_g
+    rgba[:, :, 2] = sprite_b
+    rgba[:, :, 3] = alpha
+
+    rgba = (rgba * 255).astype(np.uint8)
+
+    return rgba
+    
+def apply_bg(rgba, background_color=(255, 255, 255)):
+    r, g, b, a = cv2.split(rgba)
+    aa = a.astype(np.float32) / 255
+    r = ((r.astype(np.float32) * aa) + background_color[0] * (1 - aa)).astype(np.uint8)
+    g = ((g.astype(np.float32) * aa) + background_color[1] * (1 - aa)).astype(np.uint8)
+    b = ((b.astype(np.float32) * aa) + background_color[2] * (1 - aa)).astype(np.uint8)
+    return cv2.merge((r, g, b))
+
 def main():
     import argparse
 
@@ -268,19 +356,35 @@ def main():
     parser.add_argument("-n", "--num_steps", default=100, type=int, help="More steps - more deep transfer.")
     parser.add_argument("-o", "--output", default="nst_result.png", help="Output image name.")
     args = parser.parse_args()
-
-    import cv2
     
-    init_image = cv2.imread(args.image)  # Загрузка через OpenCV
-    cv2.cvtColor(init_image, cv2.COLOR_BGR2RGB, init_image)  # Преобразование BGR -> RGB
-
-    style_image = cv2.imread(args.style)  # Загрузка через OpenCV
-    cv2.cvtColor(style_image, cv2.COLOR_BGR2RGB, style_image)  # Преобразование BGR -> RGB
-
+    style_image = cv2.imread(args.style)
+    if style_image is None:
+        print('wrong style path')
+        exit()
+    style_image = cv2.cvtColor(style_image, cv2.COLOR_BGR2RGB)
     nst = NST_VGG19(style_image)
-    result = nst(init_image, num_steps=int(args.num_steps), label=args.image)
 
-    cv2.imwrite(args.output, cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
+    init_image = cv2.imread(args.image, cv2.IMREAD_UNCHANGED)
+    if init_image is None:
+        print('wrong image path')
+        exit()
+    
+    if init_image.shape[2] == 4:
+        init_image = cv2.cvtColor(init_image, cv2.COLOR_BGRA2RGBA)
+        _, _, _, a = cv2.split(init_image)
+        
+        black = apply_bg(init_image, (0,0,0))
+        result_black = nst(black, num_steps=int(args.num_steps), label=args.image + ' (black)')
+        
+        white = apply_bg(init_image, (255,255,255))
+        result_white = nst(white, num_steps=int(args.num_steps), label=args.image + ' (white)')
+        
+        result = calc_rgba(result_white, result_black, a)
+        cv2.imwrite(args.output, cv2.cvtColor(result, cv2.COLOR_RGBA2BGRA))
+    else:
+        init_image = cv2.cvtColor(init_image, cv2.COLOR_BGR2RGB)
+        result = nst(init_image, num_steps=int(args.num_steps), label=args.image)
+        cv2.imwrite(args.output, cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
     
 if __name__ == "__main__":
     main()
